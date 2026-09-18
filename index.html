@@ -927,6 +927,9 @@ const Sfx = {
   cash: () => { Audio.hiss(0.07, { vol: 0.15, freq: 5000, filter: 'highpass' }); [1319, 1760].forEach((f, i) => Audio.tone(f, 0.3, { type: 'square', vol: 0.04, delay: 0.05 + i * 0.08 })); },
   stamp: () => { Audio.tone(90, 0.2, { vol: 0.3, slide: -40 }); Audio.hiss(0.1, { vol: 0.2, freq: 800 }); },
   tick: () => Audio.tone(1400, 0.025, { type: 'square', vol: 0.025 }),
+  shot: () => { Audio.tone(900, 0.09, { type: 'square', vol: 0.09, slide: -740 }); Audio.hiss(0.16, { vol: 0.2, freq: 2400, sweep: -2000, q: 0.7 }); },
+  boing: () => { Audio.tone(560, 0.26, { type: 'triangle', vol: 0.13, slide: -420 }); Audio.tone(220, 0.2, { type: 'sine', vol: 0.08, slide: 180, delay: 0.06 }); },
+  thud: () => { Audio.tone(72, 0.24, { vol: 0.26, slide: -30 }); Audio.hiss(0.2, { vol: 0.13, freq: 320, q: 1 }); },
 };
 
 /* =====================================================================
@@ -2140,8 +2143,8 @@ const Game = {
   lastNight: null, lastRun: null, peds: [], pedT: 1, decor: [], decorBurger: null, backTo: 'sTitle', mouse: null,
 };
 const inPlay = () => (Game.mode === 'play' || Game.mode === 'lastcall') && !Game.paused && !!Game.run;
-const Admin = { unlocked: false, entry: '', tries: 0, lockUntil: 0, back: 'sTitle', god: false, freeze: false, noRent: false, instant: false, speed: 1 };
-const cheatsOn = () => Admin.god || Admin.freeze || Admin.noRent || Admin.instant || Admin.speed !== 1;
+const Admin = { unlocked: false, entry: '', tries: 0, lockUntil: 0, back: 'sTitle', god: false, freeze: false, noRent: false, instant: false, speed: 1, gun: false, loot: true };
+const cheatsOn = () => Admin.god || Admin.freeze || Admin.noRent || Admin.instant || Admin.gun || Admin.speed !== 1;
 
 function computeStats() {
   const u = (Game.run && Game.run.upgrades) || {}, p = (Game.meta && Game.meta.perks) || {};
@@ -2713,6 +2716,7 @@ function positionTicket(c) {
 }
 function updateCustomer(c, dt, t) {
   const o = c.obj, u = o.userData;
+  if (c.state === 'shot') return;
   c.t += dt;
   if (c.state === 'enter' || c.state === 'leave') {
     const target = c.path[0];
@@ -2886,7 +2890,7 @@ function serveTo(c, forcedPlate) {
   });
 }
 function deliver(c, burger, res) {
-  if (!Game.run || Game.ending) {
+  if (!Game.run || Game.ending || c.state !== 'eval') {
     scene.remove(burger);
     disposeObj(burger);
     if (c.state === 'eval') leave(c, 3);
@@ -3082,6 +3086,7 @@ function renderUpgradeStrip() {
   box.innerHTML = '';
   if (!run) return;
   if (cheatsOn()) { const a = h('span', 'admin-chip', '🔧 Admin'); a.title = 'Admin cheats are on'; box.appendChild(a); }
+  if (Admin.gun) { const g = h('span', 'admin-chip', '🔫 Gun out'); g.title = 'Click a customer to knock them out. Press G to holster.'; box.appendChild(g); }
   for (const id in run.upgrades) {
     const u = UPG[id];
     if (!u) continue;
@@ -3838,6 +3843,7 @@ function pickAt(x, y) {
 }
 canvas.addEventListener('pointerdown', (e) => {
   Audio.init();
+  if (Admin.gun) { fireGun(e.clientX, e.clientY); return; }
   if (!inPlay()) return;
   const o = pickAt(e.clientX, e.clientY);
   if (o) o.userData.tap(pickAt.point);
@@ -3845,6 +3851,7 @@ canvas.addEventListener('pointerdown', (e) => {
 canvas.addEventListener('pointermove', (e) => { if (e.pointerType === 'mouse') Game.mouse = { x: e.clientX, y: e.clientY }; });
 canvas.addEventListener('pointerleave', () => { Game.mouse = null; });
 function updateHover(dt) {
+  if (Admin.gun) { canvas.style.cursor = 'crosshair'; return; }
   const target = Game.mouse && inPlay() ? pickAt(Game.mouse.x, Game.mouse.y) : null;
   canvas.style.cursor = target ? 'pointer' : 'default';
   const ht = target ? target.userData.hover : null;
@@ -3872,6 +3879,7 @@ window.addEventListener('keydown', (e) => {
     return;
   }
   if (e.code === 'Backquote' || e.key === '`') { e.preventDefault(); openAdmin(); return; }
+  if (k === 'g' && Admin.unlocked) { e.preventDefault(); setGun(!Admin.gun); return; }
   if (k === 'escape' || k === 'p') {
     if (Game.paused) { e.preventDefault(); togglePause(false); return; }
     if (Game.mode === 'play' || Game.mode === 'lastcall' || Game.mode === 'intro') { e.preventDefault(); togglePause(true); return; }
@@ -3991,6 +3999,10 @@ function fitCamera() {
   Cam.look.set(0, aspect < 0.8 ? 0.7 : 1.0, -1.2);
   Cam.base.copy(Cam.look).addScaledVector(_c1.set(0, 6.6, 9.8).normalize(), dist);
   renderer.setSize(w, hh, false);
+  if (typeof Gun !== 'undefined' && Gun.group) {
+    Gun.base.set(aspect < 0.8 ? 0.34 : 0.62, aspect < 0.8 ? -0.5 : -0.42, -1.15);
+    Gun.group.position.copy(Gun.base);
+  }
   const sc = (renderer.getPixelRatio() * hh) / (2 * Math.tan(THREE.MathUtils.degToRad(camera.fov) / 2));
   FX.add.material.uniforms.uScale.value = sc;
   FX.norm.material.uniforms.uScale.value = sc;
@@ -4027,6 +4039,7 @@ function updateCamera(dt, t) {
     camera.position.y += rand(-1, 1) * Game.shake * 0.16;
   }
   Game.shake = Math.max(0, Game.shake - dt * 1.6);
+  if (Gun.cool > 0) Gun.cool = Math.max(0, Gun.cool - dt);
   camera.lookAt(Cam.curLook);
 }
 function updateAmbient(dt, t) {
@@ -4155,6 +4168,157 @@ function codeInput(key) {
   setTimeout(() => { Admin.entry = ''; renderCode(''); if (Date.now() < Admin.lockUntil) tickLock(); }, 420);
 }
 function showAdmin() { renderAdmin(); showScreen('sAdmin'); }
+
+/* ---------- the gun: a cartoon prop for clearing the counter ---------- */
+const Gun = { group: null, tip: null, flash: null, base: v3(0.62, -0.42, -1.15), cool: 0 };
+{
+  const wrap = new THREE.Group();
+  wrap.position.copy(Gun.base);
+  wrap.rotation.set(0, Math.PI / 2 + 0.14, 0.06);
+  wrap.visible = false;
+  const model = new THREE.Group();
+  wrap.add(model);
+  const flat = (m) => { m.castShadow = false; m.receiveShadow = false; return m; };
+  flat(addMesh(rbox(0.46, 0.17, 0.17, 0.05), mat(0xe63b2e, { r: 0.4 }), 0, 0, 0, model));
+  const grip = flat(addMesh(rbox(0.16, 0.3, 0.15, 0.04), mat(0x2b2a33, { r: 0.6 }), -0.12, -0.2, 0, model));
+  grip.rotation.z = 0.28;
+  const barrel = flat(addMesh(new THREE.CylinderGeometry(0.055, 0.06, 0.34, 12), mat(0xa9b1bb, { r: 0.3, m: 0.8 }), 0.3, 0.015, 0, model));
+  barrel.rotation.z = Math.PI / 2;
+  const ring = flat(addMesh(new THREE.TorusGeometry(0.075, 0.022, 8, 16), mat(0xffc21a, { r: 0.35, m: 0.4 }), 0.45, 0.015, 0, model));
+  ring.rotation.y = Math.PI / 2;
+  flat(addMesh(new THREE.SphereGeometry(0.055, 12, 8), mat(0xffc21a, { r: 0.3 }), -0.11, 0.13, 0, model));
+  flat(addMesh(new THREE.TorusGeometry(0.075, 0.018, 6, 14, Math.PI), mat(0x2b2a33, { r: 0.6 }), -0.05, -0.17, 0, model)).rotation.z = Math.PI;
+  const tip = new THREE.Object3D();
+  tip.position.set(0.52, 0.015, 0);
+  model.add(tip);
+  const flash = new THREE.Sprite(new THREE.SpriteMaterial({ map: glowTex, color: 0xffd27a, transparent: true, opacity: 0, blending: THREE.AdditiveBlending, depthWrite: false, depthTest: false, toneMapped: false }));
+  flash.scale.set(0.35, 0.35, 1);
+  flash.position.copy(tip.position);
+  model.add(flash);
+  scene.add(camera);
+  camera.add(wrap);
+  Gun.group = wrap; Gun.tip = tip; Gun.flash = flash;
+}
+function setGun(on) {
+  Admin.gun = !!on;
+  Gun.group.visible = Admin.gun;
+  canvas.style.cursor = Admin.gun ? 'crosshair' : 'default';
+  renderUpgradeStrip();
+  toast(Admin.gun ? 'Gun out. Click a customer. Press G to holster.' : 'Gun holstered');
+}
+const _gv = new THREE.Vector3();
+function muzzleFlash(to) {
+  Gun.tip.getWorldPosition(_gv);
+  const from = _gv.clone();
+  Gun.flash.material.opacity = 1;
+  Tweens.add(0.18, (e) => { Gun.flash.scale.setScalar(0.45 * (1 - e) + 0.06); Gun.flash.material.opacity = 1 - e; }, Ease.outCubic, () => { Gun.flash.material.opacity = 0; Gun.flash.scale.set(0.35, 0.35, 1); });
+  Tweens.add(0.34, (e, k) => {
+    const kick = Math.sin(Math.min(1, k * 2.2) * Math.PI) * (1 - k * 0.3);
+    Gun.group.position.z = Gun.base.z + kick * 0.18;
+    Gun.group.rotation.x = -kick * 0.42;
+  }, Ease.linear, () => { Gun.group.position.copy(Gun.base); Gun.group.rotation.x = 0; });
+  if (to) {
+    for (let i = 0; i < 14; i++) {
+      const t = i / 14;
+      emit(FX.add, { x: lerp(from.x, to.x, t), y: lerp(from.y, to.y, t), z: lerp(from.z, to.z, t), life: 0.18, s0: 0.07, s1: 0.01, c0: PC.gold, c1: PC.fire1, a0: 0.9, a1: 0 });
+    }
+    burst(to, PC.spark, 8, 1.6, 0.06, 6);
+  }
+  Sfx.shot();
+}
+function launchBody(o, done) {
+  const u = o.userData;
+  const from = o.position.clone();
+  const dx = (o.position.x >= 0 ? 1 : -1) * rand(0.6, 1.8), dist = rand(4, 6.5);
+  const spin = rand(6, 10) * (Math.random() < 0.5 ? -1 : 1);
+  u.holding = false;
+  Tweens.add(1.15, (e, k) => {
+    o.position.x = from.x + dx * e;
+    o.position.z = from.z - dist * e;
+    u.root.position.y = Math.sin(k * Math.PI) * 2.6;
+    o.rotation.x = -spin * k;
+    o.rotation.z = spin * 0.35 * k;
+    u.legs[0].rotation.x = Math.sin(k * 26) * 0.9;
+    u.legs[1].rotation.x = -Math.sin(k * 26) * 0.9;
+    u.arms[0].pivot.rotation.z = -1.6 - Math.sin(k * 20) * 0.5;
+    u.arms[1].pivot.rotation.z = 1.6 + Math.sin(k * 20) * 0.5;
+  }, Ease.outQuad, () => {
+    const p = v3(o.position.x, 0.25, o.position.z);
+    burst(p, PC.smoke, 18, 2.2, 0.12, 5, FX.norm);
+    Sfx.thud();
+    Tweens.add(0.35, (e) => { o.scale.setScalar(Math.max(0.01, u.scale * (1 - e))); }, Ease.inCubic, done);
+  });
+}
+function shootCustomer(c) {
+  if (!c || c.state === 'shot') return;
+  const o = c.obj, u = o.userData;
+  removeTicket(c, false);
+  if (c.spot && c.spot.customer === c) c.spot.customer = null;
+  untappable(o);
+  for (const pl of Stations.plates) if (pl.queued === c) pl.queued = null;
+  c.state = 'shot';
+  setFace(o, 'shock');
+  Sfx.boing();
+  const head = v3(o.position.x, 2.6 * u.scale, o.position.z);
+  floatText(head, 'POW!', 'bad');
+  burst(head, PC.gold, 16, 2.4, 0.09);
+  steam(head, 4);
+  if (Admin.loot && c.order && (Game.run || Game.save.run)) {
+    const take = Math.max(1, Math.round(c.order.price));
+    editRun((r) => { r.cash += take; });
+    persist(true);
+    coinsToTill(head, take);
+    floatText(v3(head.x + 0.5, head.y + 0.55, head.z), '+' + money(take), 'gold');
+  }
+  Game.plateDirty = true;
+  launchBody(o, () => removeCustomer(c));
+}
+function shootPed(p) {
+  const i = Game.peds.indexOf(p);
+  if (i >= 0) Game.peds.splice(i, 1);
+  setFace(p.obj, 'shock');
+  Sfx.boing();
+  floatText(v3(p.obj.position.x, 2.6, p.obj.position.z), 'POW!', 'bad');
+  burst(v3(p.obj.position.x, 2.4, p.obj.position.z), PC.gold, 12, 2, 0.08);
+  launchBody(p.obj, () => { scene.remove(p.obj); disposeObj(p.obj); });
+}
+function fireGun(cx, cy) {
+  if (Gun.cool > 0) return;
+  Gun.cool = 0.14;
+  const r = canvas.getBoundingClientRect();
+  ndc.set(((cx - r.left) / r.width) * 2 - 1, -((cy - r.top) / r.height) * 2 + 1);
+  raycaster.setFromCamera(ndc, camera);
+  const targets = [];
+  for (const c of Game.customers) if (c.state !== 'shot') targets.push(c.obj);
+  for (const p of Game.peds) targets.push(p.obj);
+  const hits = targets.length ? raycaster.intersectObjects(targets, true) : [];
+  let victim = null, point = null;
+  if (hits.length) {
+    point = hits[0].point.clone();
+    let o = hits[0].object;
+    while (o && targets.indexOf(o) < 0) o = o.parent;
+    victim = o;
+  } else {
+    const ray = raycaster.ray;
+    const t = Math.abs(ray.direction.y) > 1e-4 ? (0.15 - ray.origin.y) / ray.direction.y : -1;
+    point = ray.origin.clone().addScaledVector(ray.direction, t > 0 ? Math.min(t, 40) : 20);
+  }
+  muzzleFlash(point);
+  if (!victim) { burst(point, PC.smoke, 10, 1.6, 0.08, 8, FX.norm); return; }
+  const c = Game.customers.find((x) => x.obj === victim);
+  if (c) { shootCustomer(c); return; }
+  const pd = Game.peds.find((x) => x.obj === victim);
+  if (pd) shootPed(pd);
+}
+function shootEveryone() {
+  const line = Game.customers.filter((c) => c.state !== 'shot' && c.state !== 'leave');
+  line.forEach((c, i) => setTimeout(() => {
+    if (c.state === 'shot') return;
+    muzzleFlash(v3(c.obj.position.x, 2.2 * c.obj.userData.scale, c.obj.position.z));
+    shootCustomer(c);
+  }, i * 180));
+  return line.length;
+}
 function editRun(fn) {
   const runs = [];
   if (Game.run) runs.push(Game.run);
@@ -4231,6 +4395,10 @@ function renderAdmin() {
     TG('god', 'God mode', 'Hearts never drop') + TG('freeze', 'Frozen patience', 'Nobody walks out') +
     TG('noRent', 'Rent free', 'Rent costs $0') + TG('instant', 'Instant patties', 'Every patty is perfect once it lands') +
     `</div><div class="arow"><span>Game speed</span>${SEG('speed', Admin.speed, [[0.5, '0.5×'], [1, '1×'], [2, '2×'], [3, '3×']])}</div></section>`;
+  html += `<section class="asec"><h3>Gun <small>A prop for clearing the counter</small></h3><div class="atoggles">` +
+    TG('gun', 'Gun mode', 'Click a customer to knock them out. Key: G') +
+    TG('loot', 'They drop their cash', 'Knocked-out customers leave their money behind') +
+    `</div>` + (live ? `<div class="arow"><span>Right now</span><div class="abtns">${B('shootAll', 'Clear the counter', null, 'warn')}</div></div>` : '') + `</section>`;
   if (live) {
     const N = Game.night, waiting = Game.customers.filter((c) => c.state === 'wait').length;
     const when = Game.mode === 'lastcall' ? 'last call' : `${Math.ceil(Math.max(0, N.duration - N.time))} s left`;
@@ -4263,10 +4431,12 @@ function adminAction(a, v) {
   let msg = '';
   switch (a) {
     case 'toggle':
+      if (v === 'gun') { setGun(!Admin.gun); break; }
       Admin[v] = !Admin[v];
       if (v === 'noRent' && Game.night && Game.run) { Game.night.rent = Admin.noRent ? 0 : rentFor(Game.night.n); HUD.reset(); }
       break;
     case 'speed': Admin.speed = num; break;
+    case 'shootAll': { if (!nightActive()) return; const n = shootEveryone(); msg = n ? `Cleared ${n} ${n === 1 ? 'customer' : 'customers'}` : 'Nobody out there'; break; }
     case 'spawn': {
       if (!nightActive()) return;
       const free = Game.spots.filter((s) => !s.customer);
@@ -4401,7 +4571,7 @@ async function boot() {
   requestAnimationFrame(frame);
 }
 if (/grilltest/.test(location.hash)) {
-  window.__grill = { Game, Stations, Store, Tweens, grillHit, clickables, UPGRADES, rollOffers, Admin, openAdmin, closeAdmin, adminAction, codeInput, codeHash, placePatty, pattyTap, pattyState, addTopping, serveTo, bellServe, trashPlate, beginNight, finishNight, newRun, showDraft, pickUpgrade, showTitle, judge, setActivePlate, cyclePlate, closeDown, buy, showSave, showPerks, togglePause };
+  window.__grill = { Game, Stations, Store, Tweens, grillHit, clickables, UPGRADES, rollOffers, Admin, Gun, setGun, fireGun, shootCustomer, shootEveryone, openAdmin, closeAdmin, adminAction, codeInput, codeHash, placePatty, pattyTap, pattyState, addTopping, serveTo, bellServe, trashPlate, beginNight, finishNight, newRun, showDraft, pickUpgrade, showTitle, judge, setActivePlate, cyclePlate, closeDown, buy, showSave, showPerks, togglePause };
 }
 boot().catch((e) => fatal('Something went wrong while starting the game: ' + (e && e.message ? e.message : e)));
 })();
