@@ -930,6 +930,12 @@ const Sfx = {
   shot: () => { Audio.tone(900, 0.09, { type: 'square', vol: 0.09, slide: -740 }); Audio.hiss(0.16, { vol: 0.2, freq: 2400, sweep: -2000, q: 0.7 }); },
   boing: () => { Audio.tone(560, 0.26, { type: 'triangle', vol: 0.13, slide: -420 }); Audio.tone(220, 0.2, { type: 'sine', vol: 0.08, slide: 180, delay: 0.06 }); },
   thud: () => { Audio.tone(72, 0.24, { vol: 0.26, slide: -30 }); Audio.hiss(0.2, { vol: 0.13, freq: 320, q: 1 }); },
+  cannon: () => { Audio.tone(150, 0.28, { type: 'square', vol: 0.18, slide: -95 }); Audio.hiss(0.34, { vol: 0.24, freq: 780, q: 0.6, sweep: -480 }); },
+  plink: () => { Audio.tone(1250, 0.05, { type: 'square', vol: 0.05, slide: -640 }); Audio.hiss(0.07, { vol: 0.09, freq: 2600, q: 0.8 }); },
+  zap: () => { Audio.tone(320, 0.3, { type: 'sawtooth', vol: 0.08, slide: 1900 }); Audio.hiss(0.26, { vol: 0.14, freq: 3200, sweep: -2600, q: 0.6 }); },
+  chill: () => { Audio.hiss(0.4, { vol: 0.16, freq: 5200, filter: 'highpass', sweep: -3400 }); Audio.tone(1568, 0.4, { vol: 0.05, slide: -900 }); },
+  shatter: () => { Audio.hiss(0.18, { vol: 0.16, freq: 4200, q: 0.9 }); [1760, 2349, 1319].forEach((f, i) => Audio.tone(f, 0.12, { type: 'triangle', vol: 0.05, delay: i * 0.05 })); },
+  party: () => { Audio.tone(700, 0.08, { type: 'square', vol: 0.11, slide: 620 }); [523, 659, 784, 1047].forEach((f, i) => Audio.tone(f, 0.18, { type: 'triangle', vol: 0.07, delay: 0.05 + i * 0.05 })); },
 };
 
 /* =====================================================================
@@ -2143,7 +2149,7 @@ const Game = {
   lastNight: null, lastRun: null, peds: [], pedT: 1, decor: [], decorBurger: null, backTo: 'sTitle', mouse: null,
 };
 const inPlay = () => (Game.mode === 'play' || Game.mode === 'lastcall') && !Game.paused && !!Game.run;
-const Admin = { unlocked: false, entry: '', tries: 0, lockUntil: 0, back: 'sTitle', god: false, freeze: false, noRent: false, instant: false, speed: 1, gun: false, loot: true };
+const Admin = { unlocked: false, entry: '', tries: 0, lockUntil: 0, back: 'sTitle', god: false, freeze: false, noRent: false, instant: false, speed: 1, gun: false, loot: true, gunType: 'pistol' };
 const cheatsOn = () => Admin.god || Admin.freeze || Admin.noRent || Admin.instant || Admin.gun || Admin.speed !== 1;
 
 function computeStats() {
@@ -2717,6 +2723,11 @@ function positionTicket(c) {
 function updateCustomer(c, dt, t) {
   const o = c.obj, u = o.userData;
   if (c.state === 'shot') return;
+  if (c.frozenT > 0) {
+    c.frozenT -= dt;
+    if (c.frozenT <= 0) thawCustomer(c);
+    else { if (c.ice) c.ice.rotation.y += dt * 0.5; return; }
+  }
   c.t += dt;
   if (c.state === 'enter' || c.state === 'leave') {
     const target = c.path[0];
@@ -2856,6 +2867,7 @@ function serveTo(c, forcedPlate) {
   }
   if (plate.busy) return;
   if (plate.pending) { plate.queued = c; return; }
+  if (c.frozenT > 0) thawCustomer(c);
   const res = judge(plate.items, c.order.counts);
   c.state = 'eval';
   removeTicket(c, false);
@@ -3086,7 +3098,7 @@ function renderUpgradeStrip() {
   box.innerHTML = '';
   if (!run) return;
   if (cheatsOn()) { const a = h('span', 'admin-chip', '🔧 Admin'); a.title = 'Admin cheats are on'; box.appendChild(a); }
-  if (Admin.gun) { const g = h('span', 'admin-chip', '🔫 Gun out'); g.title = 'Click a customer to knock them out. Press G to holster.'; box.appendChild(g); }
+  if (Admin.gun) { const d = gunDef(); const g = h('span', 'admin-chip', `${d.icon} ${d.name}`); g.title = `${d.desc} Keys 1-${GUNS.length} swap guns, G holsters.`; box.appendChild(g); }
   for (const id in run.upgrades) {
     const u = UPG[id];
     if (!u) continue;
@@ -3416,6 +3428,11 @@ function updatePeds(dt, t) {
   }
   for (let i = Game.peds.length - 1; i >= 0; i--) {
     const p = Game.peds[i];
+    if (p.frozenT > 0) {
+      p.frozenT -= dt;
+      if (p.frozenT <= 0) iceOff(p.obj, p);
+      else { if (p.ice) p.ice.rotation.y += dt * 0.5; continue; }
+    }
     p.obj.position.x += p.dir * p.speed * dt;
     stepPerson(p.obj, dt, dt > 0 ? p.speed : 0, t);
     if (Math.abs(p.obj.position.x) > 23) { scene.remove(p.obj); disposeObj(p.obj); Game.peds.splice(i, 1); }
@@ -3843,12 +3860,27 @@ function pickAt(x, y) {
 }
 canvas.addEventListener('pointerdown', (e) => {
   Audio.init();
-  if (Admin.gun) { fireGun(e.clientX, e.clientY); return; }
+  if (Admin.gun) {
+    if (gunDef().auto) Gun.auto = { x: e.clientX, y: e.clientY, id: e.pointerId };
+    fireGun(e.clientX, e.clientY);
+    return;
+  }
   if (!inPlay()) return;
   const o = pickAt(e.clientX, e.clientY);
   if (o) o.userData.tap(pickAt.point);
 });
-canvas.addEventListener('pointermove', (e) => { if (e.pointerType === 'mouse') Game.mouse = { x: e.clientX, y: e.clientY }; });
+canvas.addEventListener('pointermove', (e) => {
+  if (e.pointerType === 'mouse') Game.mouse = { x: e.clientX, y: e.clientY };
+  if (Gun.auto && Gun.auto.id === e.pointerId) { Gun.auto.x = e.clientX; Gun.auto.y = e.clientY; }
+});
+window.addEventListener('pointerup', () => { Gun.auto = null; });
+window.addEventListener('pointercancel', () => { Gun.auto = null; });
+canvas.addEventListener('wheel', (e) => {
+  if (!Admin.gun) return;
+  e.preventDefault();
+  const i = GUNS.findIndex((g) => g.id === Admin.gunType);
+  setGunType(GUNS[(i + (e.deltaY > 0 ? 1 : GUNS.length - 1)) % GUNS.length].id);
+}, { passive: false });
 canvas.addEventListener('pointerleave', () => { Game.mouse = null; });
 function updateHover(dt) {
   if (Admin.gun) { canvas.style.cursor = 'crosshair'; return; }
@@ -3880,6 +3912,7 @@ window.addEventListener('keydown', (e) => {
   }
   if (e.code === 'Backquote' || e.key === '`') { e.preventDefault(); openAdmin(); return; }
   if (k === 'g' && Admin.unlocked) { e.preventDefault(); setGun(!Admin.gun); return; }
+  if (Admin.gun && k.length === 1 && k >= '1' && k <= '9' && Number(k) <= GUNS.length) { e.preventDefault(); setGunType(GUNS[Number(k) - 1].id); return; }
   if (k === 'escape' || k === 'p') {
     if (Game.paused) { e.preventDefault(); togglePause(false); return; }
     if (Game.mode === 'play' || Game.mode === 'lastcall' || Game.mode === 'intro') { e.preventDefault(); togglePause(true); return; }
@@ -4169,73 +4202,206 @@ function codeInput(key) {
 }
 function showAdmin() { renderAdmin(); showScreen('sAdmin'); }
 
-/* ---------- the gun: a cartoon prop for clearing the counter ---------- */
-const Gun = { group: null, tip: null, flash: null, base: v3(0.62, -0.42, -1.15), cool: 0 };
+/* ---------- the gun rack: cartoon props for clearing the counter ---------- */
+const GUNS = [
+  { id: 'pistol', icon: '🔫', name: 'Toy pistol', desc: 'One shot, one customer. Reliable.', cool: 0.16, up: 2.6, dist: [4, 6.5], time: 1.15, tracer: PC.gold, hit: PC.gold, pow: 'POW!' },
+  { id: 'ketchup', icon: '🍅', name: 'Ketchup cannon', desc: 'A wide splat that blasts away everyone standing near the hit.', cool: 0.7, radius: 2.4, up: 2.2, dist: [7, 10], time: 1.3, tracer: [0.9, 0.18, 0.14], hit: [0.9, 0.18, 0.14], pow: 'SPLAT!', shake: 0.4 },
+  { id: 'pickle', icon: '🥒', name: 'Pickle repeater', desc: 'Hold the button down and keep firing pickle chips.', cool: 0.11, auto: true, up: 1.8, dist: [3, 5], time: 1, tracer: [0.45, 0.72, 0.2], hit: [0.45, 0.72, 0.2], pow: 'THWIP!' },
+  { id: 'rail', icon: '🍳', name: 'Spatula railgun', desc: 'A beam that flips everyone in its path high into the night.', cool: 0.9, pierce: true, up: 7.5, dist: [0.3, 1], time: 1.8, tracer: [0.25, 0.88, 0.94], hit: [0.25, 0.88, 0.94], pow: 'FLIPPED!', shake: 0.3 },
+  { id: 'freeze', icon: '🧊', name: 'Slushie freezer', desc: 'Freezes them solid for 8 seconds instead. Their patience stops too.', cool: 0.5, radius: 1.7, freeze: true, tracer: PC.steam, hit: PC.steam },
+  { id: 'popper', icon: '🎉', name: 'Party popper', desc: 'No knockout. They leave delighted and pay double.', cool: 0.5, nice: true, tracer: [1, 0.76, 0.1], hit: [1, 0.76, 0.1] },
+];
+const gunDef = () => GUNS.find((g) => g.id === Admin.gunType) || GUNS[0];
+const Gun = { group: null, models: {}, base: v3(0.62, -0.42, -1.15), cool: 0, auto: null };
+const G_ICE = new THREE.IcosahedronGeometry(0.62, 0);
+const iceMat = new THREE.MeshStandardMaterial({ color: col(0xbfeeff), roughness: 0.12, metalness: 0, transparent: true, opacity: 0.5, flatShading: true });
 {
   const wrap = new THREE.Group();
   wrap.position.copy(Gun.base);
   wrap.rotation.set(0, Math.PI / 2 + 0.14, 0.06);
   wrap.visible = false;
-  const model = new THREE.Group();
-  wrap.add(model);
   const flat = (m) => { m.castShadow = false; m.receiveShadow = false; return m; };
-  flat(addMesh(rbox(0.46, 0.17, 0.17, 0.05), mat(0xe63b2e, { r: 0.4 }), 0, 0, 0, model));
-  const grip = flat(addMesh(rbox(0.16, 0.3, 0.15, 0.04), mat(0x2b2a33, { r: 0.6 }), -0.12, -0.2, 0, model));
-  grip.rotation.z = 0.28;
-  const barrel = flat(addMesh(new THREE.CylinderGeometry(0.055, 0.06, 0.34, 12), mat(0xa9b1bb, { r: 0.3, m: 0.8 }), 0.3, 0.015, 0, model));
-  barrel.rotation.z = Math.PI / 2;
-  const ring = flat(addMesh(new THREE.TorusGeometry(0.075, 0.022, 8, 16), mat(0xffc21a, { r: 0.35, m: 0.4 }), 0.45, 0.015, 0, model));
-  ring.rotation.y = Math.PI / 2;
-  flat(addMesh(new THREE.SphereGeometry(0.055, 12, 8), mat(0xffc21a, { r: 0.3 }), -0.11, 0.13, 0, model));
-  flat(addMesh(new THREE.TorusGeometry(0.075, 0.018, 6, 14, Math.PI), mat(0x2b2a33, { r: 0.6 }), -0.05, -0.17, 0, model)).rotation.z = Math.PI;
-  const tip = new THREE.Object3D();
-  tip.position.set(0.52, 0.015, 0);
-  model.add(tip);
-  const flash = new THREE.Sprite(new THREE.SpriteMaterial({ map: glowTex, color: 0xffd27a, transparent: true, opacity: 0, blending: THREE.AdditiveBlending, depthWrite: false, depthTest: false, toneMapped: false }));
-  flash.scale.set(0.35, 0.35, 1);
-  flash.position.copy(tip.position);
-  model.add(flash);
+  const steel = mat(0xa9b1bb, { r: 0.3, m: 0.8 }), dark = mat(0x2b2a33, { r: 0.6 }), gold = mat(0xffc21a, { r: 0.35, m: 0.4 });
+  const make = (id, build) => {
+    const g = new THREE.Group();
+    const tip = new THREE.Object3D();
+    build(g, tip, flat);
+    g.add(tip);
+    const flash = new THREE.Sprite(new THREE.SpriteMaterial({ map: glowTex, color: 0xffd27a, transparent: true, opacity: 0, blending: THREE.AdditiveBlending, depthWrite: false, depthTest: false, toneMapped: false }));
+    flash.scale.set(0.35, 0.35, 1);
+    flash.position.copy(tip.position);
+    g.add(flash);
+    g.visible = false;
+    wrap.add(g);
+    Gun.models[id] = { group: g, tip, flash };
+  };
+  make('pistol', (g, tip) => {
+    flat(addMesh(rbox(0.46, 0.17, 0.17, 0.05), mat(0xe63b2e, { r: 0.4 }), 0, 0, 0, g));
+    flat(addMesh(rbox(0.16, 0.3, 0.15, 0.04), dark, -0.12, -0.2, 0, g)).rotation.z = 0.28;
+    flat(addMesh(new THREE.CylinderGeometry(0.055, 0.06, 0.34, 12), steel, 0.3, 0.015, 0, g)).rotation.z = Math.PI / 2;
+    flat(addMesh(new THREE.TorusGeometry(0.075, 0.022, 8, 16), gold, 0.45, 0.015, 0, g)).rotation.y = Math.PI / 2;
+    flat(addMesh(new THREE.SphereGeometry(0.055, 12, 8), gold, -0.11, 0.13, 0, g));
+    flat(addMesh(new THREE.TorusGeometry(0.075, 0.018, 6, 14, Math.PI), dark, -0.05, -0.17, 0, g)).rotation.z = Math.PI;
+    tip.position.set(0.52, 0.015, 0);
+  });
+  make('ketchup', (g, tip) => {
+    flat(addMesh(rbox(0.4, 0.2, 0.2, 0.06), mat(0xd8342a, { r: 0.45 }), 0, 0, 0, g));
+    flat(addMesh(new THREE.CylinderGeometry(0.13, 0.17, 0.4, 14), mat(0xb5241c, { r: 0.4 }), 0.34, 0.02, 0, g)).rotation.z = Math.PI / 2;
+    flat(addMesh(new THREE.CylinderGeometry(0.11, 0.11, 0.3, 12), mat(0xe63b2e, { r: 0.35 }), -0.02, 0.23, 0, g));
+    flat(addMesh(new THREE.SphereGeometry(0.06, 10, 8), gold, -0.02, 0.41, 0, g));
+    flat(addMesh(rbox(0.16, 0.28, 0.14, 0.04), dark, -0.14, -0.2, 0, g)).rotation.z = 0.28;
+    tip.position.set(0.56, 0.02, 0);
+  });
+  make('pickle', (g, tip) => {
+    flat(addMesh(rbox(0.5, 0.14, 0.14, 0.04), mat(0x4f7a25, { r: 0.5 }), 0.05, 0, 0, g));
+    flat(addMesh(new THREE.CylinderGeometry(0.045, 0.045, 0.5, 10), steel, 0.44, 0.01, 0, g)).rotation.z = Math.PI / 2;
+    flat(addMesh(new THREE.CylinderGeometry(0.16, 0.16, 0.1, 16), mat(0x9ccc5a, { r: 0.5 }), 0.02, -0.16, 0, g)).rotation.x = Math.PI / 2;
+    flat(addMesh(rbox(0.14, 0.24, 0.13, 0.04), dark, -0.2, -0.16, 0, g)).rotation.z = 0.3;
+    flat(addMesh(rbox(0.22, 0.1, 0.12, 0.03), dark, -0.32, 0.01, 0, g));
+    tip.position.set(0.7, 0.01, 0);
+  });
+  make('rail', (g, tip) => {
+    flat(addMesh(rbox(0.34, 0.16, 0.16, 0.05), dark, -0.05, 0, 0, g));
+    flat(addMesh(rbox(0.42, 0.03, 0.26, 0.02), steel, 0.36, 0.01, 0, g));
+    for (let i = 0; i < 3; i++) flat(addMesh(new THREE.TorusGeometry(0.1, 0.02, 8, 14), mat(0x3fe0f0, { r: 0.3, e: 0x3fe0f0, ei: 0.9 }), 0.16 + i * 0.13, 0.01, 0, g)).rotation.y = Math.PI / 2;
+    flat(addMesh(rbox(0.14, 0.26, 0.13, 0.04), dark, -0.16, -0.18, 0, g)).rotation.z = 0.28;
+    tip.position.set(0.58, 0.01, 0);
+  });
+  make('freeze', (g, tip) => {
+    flat(addMesh(rbox(0.36, 0.18, 0.18, 0.05), mat(0x3fb8c4, { r: 0.4 }), 0, 0, 0, g));
+    flat(addMesh(new THREE.SphereGeometry(0.17, 14, 10), mat(0xbfeeff, { r: 0.2, e: 0x7fe0ff, ei: 0.6 }), 0.34, 0.02, 0, g));
+    flat(addMesh(new THREE.CylinderGeometry(0.1, 0.1, 0.26, 12), mat(0xeafcff, { r: 0.3 }), -0.04, 0.21, 0, g));
+    flat(addMesh(rbox(0.15, 0.26, 0.13, 0.04), dark, -0.14, -0.19, 0, g)).rotation.z = 0.28;
+    tip.position.set(0.54, 0.02, 0);
+  });
+  make('popper', (g, tip) => {
+    flat(addMesh(new THREE.ConeGeometry(0.2, 0.44, 14), mat(0xffc21a, { r: 0.4 }), 0.26, 0.02, 0, g)).rotation.z = -Math.PI / 2;
+    flat(addMesh(new THREE.TorusGeometry(0.19, 0.03, 8, 16), mat(0xe63b2e, { r: 0.4 }), 0.46, 0.02, 0, g)).rotation.y = Math.PI / 2;
+    flat(addMesh(rbox(0.24, 0.16, 0.16, 0.05), mat(0xb37bff, { r: 0.45 }), -0.06, 0, 0, g));
+    flat(addMesh(rbox(0.14, 0.24, 0.13, 0.04), dark, -0.17, -0.17, 0, g)).rotation.z = 0.3;
+    tip.position.set(0.52, 0.02, 0);
+  });
   scene.add(camera);
   camera.add(wrap);
-  Gun.group = wrap; Gun.tip = tip; Gun.flash = flash;
+  Gun.group = wrap;
+}
+function setGunType(id) {
+  if (!GUNS.some((g) => g.id === id)) return;
+  Admin.gunType = id;
+  for (const key in Gun.models) Gun.models[key].group.visible = key === id;
+  Gun.cool = 0;
+  renderUpgradeStrip();
+  if (Admin.gun) toast(`${gunDef().icon} ${gunDef().name}`);
 }
 function setGun(on) {
   Admin.gun = !!on;
   Gun.group.visible = Admin.gun;
+  setGunType(Admin.gunType);
   canvas.style.cursor = Admin.gun ? 'crosshair' : 'default';
+  if (!Admin.gun) Gun.auto = null;
   renderUpgradeStrip();
-  toast(Admin.gun ? 'Gun out. Click a customer. Press G to holster.' : 'Gun holstered');
+  toast(Admin.gun ? `${gunDef().icon} ${gunDef().name} out. Press G to holster.` : 'Gun holstered');
 }
 const _gv = new THREE.Vector3();
-function muzzleFlash(to) {
-  Gun.tip.getWorldPosition(_gv);
+function muzzleFlash(to, G) {
+  const M = Gun.models[Admin.gunType];
+  if (!M) return;
+  M.tip.getWorldPosition(_gv);
   const from = _gv.clone();
-  Gun.flash.material.opacity = 1;
-  Tweens.add(0.18, (e) => { Gun.flash.scale.setScalar(0.45 * (1 - e) + 0.06); Gun.flash.material.opacity = 1 - e; }, Ease.outCubic, () => { Gun.flash.material.opacity = 0; Gun.flash.scale.set(0.35, 0.35, 1); });
+  M.flash.material.opacity = 1;
+  Tweens.add(0.18, (e) => { M.flash.scale.setScalar(0.45 * (1 - e) + 0.06); M.flash.material.opacity = 1 - e; }, Ease.outCubic, () => { M.flash.material.opacity = 0; M.flash.scale.set(0.35, 0.35, 1); });
+  const kickBack = G.shake ? 0.28 : 0.18;
   Tweens.add(0.34, (e, k) => {
     const kick = Math.sin(Math.min(1, k * 2.2) * Math.PI) * (1 - k * 0.3);
-    Gun.group.position.z = Gun.base.z + kick * 0.18;
-    Gun.group.rotation.x = -kick * 0.42;
+    Gun.group.position.z = Gun.base.z + kick * kickBack;
+    Gun.group.rotation.x = -kick * (G.shake ? 0.6 : 0.42);
   }, Ease.linear, () => { Gun.group.position.copy(Gun.base); Gun.group.rotation.x = 0; });
   if (to) {
-    for (let i = 0; i < 14; i++) {
-      const t = i / 14;
-      emit(FX.add, { x: lerp(from.x, to.x, t), y: lerp(from.y, to.y, t), z: lerp(from.z, to.z, t), life: 0.18, s0: 0.07, s1: 0.01, c0: PC.gold, c1: PC.fire1, a0: 0.9, a1: 0 });
+    const n = G.pierce ? 34 : G.id === 'ketchup' ? 22 : 14;
+    for (let i = 0; i < n; i++) {
+      const t = i / n;
+      const spread = G.id === 'ketchup' ? 0.22 * t : 0;
+      emit(FX.add, {
+        x: lerp(from.x, to.x, t) + rand(-spread, spread), y: lerp(from.y, to.y, t) + rand(-spread, spread), z: lerp(from.z, to.z, t) + rand(-spread, spread),
+        life: G.pierce ? 0.3 : 0.18, s0: G.pierce ? 0.13 : 0.07, s1: 0.01, c0: G.tracer, c1: G.pierce ? PC.white : PC.fire1, a0: 0.9, a1: 0,
+      });
     }
-    burst(to, PC.spark, 8, 1.6, 0.06, 6);
   }
-  Sfx.shot();
+  if (G.shake) shake(G.shake);
+  if (G.id === 'ketchup') Sfx.cannon();
+  else if (G.id === 'pickle') Sfx.plink();
+  else if (G.id === 'rail') Sfx.zap();
+  else if (G.id === 'freeze') Sfx.chill();
+  else if (G.id === 'popper') Sfx.party();
+  else Sfx.shot();
 }
-function launchBody(o, done) {
+function splat(point, G) {
+  if (G.id === 'popper') { confetti3(point, 26); return; }
+  if (G.id === 'rail') { burst(point, G.hit, 18, 2.6, 0.1, 3); return; }
+  const n = G.id === 'ketchup' ? 26 : G.id === 'freeze' ? 16 : 10;
+  burst(point, G.hit, n, G.id === 'ketchup' ? 3.2 : 1.8, G.id === 'ketchup' ? 0.14 : 0.08, 7, FX.norm);
+}
+function iceOn(obj, holder, secs) {
+  holder.frozenT = Math.max(holder.frozenT || 0, secs);
+  if (!holder.ice) {
+    const ice = new THREE.Mesh(G_ICE, iceMat);
+    ice.position.y = 1.15;
+    ice.scale.set(0.95, 1.55, 0.95);
+    obj.add(ice);
+    holder.ice = ice;
+  }
+  const u = obj.userData;
+  u.legs[0].rotation.x = 0; u.legs[1].rotation.x = 0;
+  u.arms[0].pivot.rotation.x = 0; u.arms[1].pivot.rotation.x = 0;
+  setFace(obj, 'shock');
+  burst(v3(obj.position.x, 1.4, obj.position.z), PC.steam, 14, 1.6, 0.1, 2, FX.norm);
+  floatText(v3(obj.position.x, 2.5 * (u.scale || 1), obj.position.z), 'Brrr!', 'small');
+  Sfx.chill();
+}
+function iceOff(obj, holder) {
+  holder.frozenT = 0;
+  if (holder.ice) { obj.remove(holder.ice); holder.ice = null; }
+  burst(v3(obj.position.x, 1.3, obj.position.z), PC.white, 16, 2, 0.08, 6, FX.norm);
+  Sfx.shatter();
+}
+function freezeCustomer(c, secs) {
+  if (!c || c.state === 'shot') return;
+  iceOn(c.obj, c, secs || 8);
+}
+function thawCustomer(c) {
+  if (!c || !c.frozenT) return;
+  iceOff(c.obj, c);
+  setFace(c.obj, 'neutral');
+}
+function delightCustomer(c) {
+  if (!c || (c.state !== 'wait' && c.state !== 'enter')) return;
+  if (c.frozenT) thawCustomer(c);
+  if (!Game.run || !Game.night) { leave(c, 3); return; }
+  removeTicket(c, false);
+  if (c.spot && c.spot.customer === c) c.spot.customer = null;
+  for (const pl of Stations.plates) if (pl.queued === c) pl.queued = null;
+  untappable(c.obj);
+  c.state = 'eval';
+  const patties = c.order.counts.patty;
+  const res = { match: true, perfect: patties, crispy: 0, patties };
+  const pay = payout(c, res);
+  editRun((r) => { r.cash += pay.total; });
+  pay.total *= 2;
+  confetti3(v3(c.obj.position.x, 2.4, c.obj.position.z), 30);
+  celebrate(c, res, pay);
+  persist(true);
+}
+function launchBody(o, done, G) {
   const u = o.userData;
   const from = o.position.clone();
-  const dx = (o.position.x >= 0 ? 1 : -1) * rand(0.6, 1.8), dist = rand(4, 6.5);
+  const range = G.dist || [4, 6.5];
+  const dx = (o.position.x >= 0 ? 1 : -1) * rand(0.6, 1.8), dist = rand(range[0], range[1]);
   const spin = rand(6, 10) * (Math.random() < 0.5 ? -1 : 1);
   u.holding = false;
-  Tweens.add(1.15, (e, k) => {
+  Tweens.add(G.time || 1.15, (e, k) => {
     o.position.x = from.x + dx * e;
     o.position.z = from.z - dist * e;
-    u.root.position.y = Math.sin(k * Math.PI) * 2.6;
+    u.root.position.y = Math.sin(k * Math.PI) * (G.up || 2.6);
     o.rotation.x = -spin * k;
     o.rotation.z = spin * 0.35 * k;
     u.legs[0].rotation.x = Math.sin(k * 26) * 0.9;
@@ -4249,9 +4415,11 @@ function launchBody(o, done) {
     Tweens.add(0.35, (e) => { o.scale.setScalar(Math.max(0.01, u.scale * (1 - e))); }, Ease.inCubic, done);
   });
 }
-function shootCustomer(c) {
+function shootCustomer(c, G) {
   if (!c || c.state === 'shot') return;
+  const style = G || gunDef();
   const o = c.obj, u = o.userData;
+  if (c.frozenT) iceOff(o, c);
   removeTicket(c, false);
   if (c.spot && c.spot.customer === c) c.spot.customer = null;
   untappable(o);
@@ -4260,8 +4428,8 @@ function shootCustomer(c) {
   setFace(o, 'shock');
   Sfx.boing();
   const head = v3(o.position.x, 2.6 * u.scale, o.position.z);
-  floatText(head, 'POW!', 'bad');
-  burst(head, PC.gold, 16, 2.4, 0.09);
+  floatText(head, style.pow || 'POW!', 'bad');
+  burst(head, style.hit || PC.gold, 16, 2.4, 0.09);
   steam(head, 4);
   if (Admin.loot && c.order && (Game.run || Game.save.run)) {
     const take = Math.max(1, Math.round(c.order.price));
@@ -4271,51 +4439,80 @@ function shootCustomer(c) {
     floatText(v3(head.x + 0.5, head.y + 0.55, head.z), '+' + money(take), 'gold');
   }
   Game.plateDirty = true;
-  launchBody(o, () => removeCustomer(c));
+  launchBody(o, () => removeCustomer(c), style);
 }
-function shootPed(p) {
+function shootPed(p, G) {
+  const style = G || gunDef();
   const i = Game.peds.indexOf(p);
   if (i >= 0) Game.peds.splice(i, 1);
+  if (p.frozenT) iceOff(p.obj, p);
   setFace(p.obj, 'shock');
   Sfx.boing();
-  floatText(v3(p.obj.position.x, 2.6, p.obj.position.z), 'POW!', 'bad');
-  burst(v3(p.obj.position.x, 2.4, p.obj.position.z), PC.gold, 12, 2, 0.08);
-  launchBody(p.obj, () => { scene.remove(p.obj); disposeObj(p.obj); });
+  floatText(v3(p.obj.position.x, 2.6, p.obj.position.z), style.pow || 'POW!', 'bad');
+  burst(v3(p.obj.position.x, 2.4, p.obj.position.z), style.hit || PC.gold, 12, 2, 0.08);
+  launchBody(p.obj, () => { scene.remove(p.obj); disposeObj(p.obj); }, style);
+}
+function gunTargets() {
+  const t = [];
+  for (const c of Game.customers) if (c.state !== 'shot') t.push(c.obj);
+  for (const p of Game.peds) t.push(p.obj);
+  return t;
+}
+function applyGunHit(obj, G) {
+  const c = Game.customers.find((x) => x.obj === obj);
+  if (c) {
+    if (G.freeze) freezeCustomer(c, 8);
+    else if (G.nice) delightCustomer(c);
+    else shootCustomer(c, G);
+    return;
+  }
+  const p = Game.peds.find((x) => x.obj === obj);
+  if (!p) return;
+  if (G.freeze) iceOn(p.obj, p, 8);
+  else shootPed(p, G);
 }
 function fireGun(cx, cy) {
-  if (Gun.cool > 0) return;
-  Gun.cool = 0.14;
+  if (!Admin.gun || Gun.cool > 0) return;
+  const G = gunDef();
+  Gun.cool = G.cool;
   const r = canvas.getBoundingClientRect();
   ndc.set(((cx - r.left) / r.width) * 2 - 1, -((cy - r.top) / r.height) * 2 + 1);
   raycaster.setFromCamera(ndc, camera);
-  const targets = [];
-  for (const c of Game.customers) if (c.state !== 'shot') targets.push(c.obj);
-  for (const p of Game.peds) targets.push(p.obj);
+  const targets = gunTargets();
   const hits = targets.length ? raycaster.intersectObjects(targets, true) : [];
-  let victim = null, point = null;
-  if (hits.length) {
-    point = hits[0].point.clone();
-    let o = hits[0].object;
+  const roots = [];
+  for (const hit of hits) {
+    let o = hit.object;
     while (o && targets.indexOf(o) < 0) o = o.parent;
-    victim = o;
-  } else {
-    const ray = raycaster.ray;
+    if (o && roots.indexOf(o) < 0) roots.push(o);
+  }
+  const ray = raycaster.ray;
+  let point;
+  if (hits.length) point = hits[0].point.clone();
+  else {
     const t = Math.abs(ray.direction.y) > 1e-4 ? (0.15 - ray.origin.y) / ray.direction.y : -1;
     point = ray.origin.clone().addScaledVector(ray.direction, t > 0 ? Math.min(t, 40) : 20);
   }
-  muzzleFlash(point);
-  if (!victim) { burst(point, PC.smoke, 10, 1.6, 0.08, 8, FX.norm); return; }
-  const c = Game.customers.find((x) => x.obj === victim);
-  if (c) { shootCustomer(c); return; }
-  const pd = Game.peds.find((x) => x.obj === victim);
-  if (pd) shootPed(pd);
+  muzzleFlash(G.pierce ? ray.origin.clone().addScaledVector(ray.direction, 42) : point, G);
+  splat(point, G);
+  let victims;
+  if (G.pierce) victims = roots;
+  else if (G.radius) {
+    victims = targets.filter((o) => Math.hypot(o.position.x - point.x, o.position.z - point.z) <= G.radius);
+    if (roots.length && victims.indexOf(roots[0]) < 0) victims.push(roots[0]);
+  } else victims = roots.slice(0, 1);
+  victims.forEach((o, i) => {
+    if (i === 0) applyGunHit(o, G);
+    else setTimeout(() => applyGunHit(o, G), i * 90);
+  });
 }
 function shootEveryone() {
-  const line = Game.customers.filter((c) => c.state !== 'shot' && c.state !== 'leave');
+  const G = gunDef();
+  const line = Game.customers.filter((c) => c.state !== 'shot' && c.state !== 'leave' && c.state !== 'happy');
   line.forEach((c, i) => setTimeout(() => {
     if (c.state === 'shot') return;
-    muzzleFlash(v3(c.obj.position.x, 2.2 * c.obj.userData.scale, c.obj.position.z));
-    shootCustomer(c);
+    muzzleFlash(v3(c.obj.position.x, 2.2 * c.obj.userData.scale, c.obj.position.z), G);
+    applyGunHit(c.obj, G);
   }, i * 180));
   return line.length;
 }
@@ -4395,10 +4592,13 @@ function renderAdmin() {
     TG('god', 'God mode', 'Hearts never drop') + TG('freeze', 'Frozen patience', 'Nobody walks out') +
     TG('noRent', 'Rent free', 'Rent costs $0') + TG('instant', 'Instant patties', 'Every patty is perfect once it lands') +
     `</div><div class="arow"><span>Game speed</span>${SEG('speed', Admin.speed, [[0.5, '0.5×'], [1, '1×'], [2, '2×'], [3, '3×']])}</div></section>`;
-  html += `<section class="asec"><h3>Gun <small>A prop for clearing the counter</small></h3><div class="atoggles">` +
-    TG('gun', 'Gun mode', 'Click a customer to knock them out. Key: G') +
+  const gd = gunDef();
+  html += `<section class="asec"><h3>Guns <small>Keys 1 to ${GUNS.length} swap guns, scroll cycles, G holsters</small></h3><div class="atoggles">` +
+    TG('gun', 'Gun mode', 'Click a customer to fire at them. Key: G') +
     TG('loot', 'They drop their cash', 'Knocked-out customers leave their money behind') +
-    `</div>` + (live ? `<div class="arow"><span>Right now</span><div class="abtns">${B('shootAll', 'Clear the counter', null, 'warn')}</div></div>` : '') + `</section>`;
+    `</div><div class="arow"><span>Loadout</span><div class="seg">${GUNS.map((g, i) => `<button type="button" class="${Admin.gunType === g.id ? 'on' : ''}" data-a="gunType" data-v="${g.id}">${g.icon} ${g.name}<small> ${i + 1}</small></button>`).join('')}</div></div>` +
+    `<p class="fine">${gd.icon} <b>${gd.name}</b> — ${gd.desc}</p>` +
+    (live ? `<div class="arow"><span>Right now</span><div class="abtns">${B('shootAll', 'Clear the counter', null, 'warn')}${B('thawAll', 'Thaw everyone')}</div></div>` : '') + `</section>`;
   if (live) {
     const N = Game.night, waiting = Game.customers.filter((c) => c.state === 'wait').length;
     const when = Game.mode === 'lastcall' ? 'last call' : `${Math.ceil(Math.max(0, N.duration - N.time))} s left`;
@@ -4436,7 +4636,15 @@ function adminAction(a, v) {
       if (v === 'noRent' && Game.night && Game.run) { Game.night.rent = Admin.noRent ? 0 : rentFor(Game.night.n); HUD.reset(); }
       break;
     case 'speed': Admin.speed = num; break;
-    case 'shootAll': { if (!nightActive()) return; const n = shootEveryone(); msg = n ? `Cleared ${n} ${n === 1 ? 'customer' : 'customers'}` : 'Nobody out there'; break; }
+    case 'shootAll': { if (!nightActive()) return; const n = shootEveryone(); msg = n ? `${gunDef().icon} ${n} ${n === 1 ? 'customer' : 'customers'}` : 'Nobody out there'; break; }
+    case 'gunType': setGunType(v); if (!Admin.gun) setGun(true); break;
+    case 'thawAll': {
+      let n = 0;
+      for (const c of Game.customers) if (c.frozenT > 0) { thawCustomer(c); n++; }
+      for (const p of Game.peds) if (p.frozenT > 0) { iceOff(p.obj, p); n++; }
+      msg = n ? 'Everyone thawed out' : 'Nobody is frozen';
+      break;
+    }
     case 'spawn': {
       if (!nightActive()) return;
       const free = Game.spots.filter((s) => !s.customer);
@@ -4549,6 +4757,7 @@ function frame(now) {
   updateAmbient(dt, elapsed);
   updateFX(FX.add, dt);
   updateFX(FX.norm, dt);
+  if (Admin.gun && Gun.auto && gunDef().auto && !Game.paused) fireGun(Gun.auto.x, Gun.auto.y);
   hoverTick += 1;
   if (hoverTick % 2 === 0) updateHover(rdt * 2);
   updateCamera(rdt, elapsed);
@@ -4571,7 +4780,7 @@ async function boot() {
   requestAnimationFrame(frame);
 }
 if (/grilltest/.test(location.hash)) {
-  window.__grill = { Game, Stations, Store, Tweens, grillHit, clickables, UPGRADES, rollOffers, Admin, Gun, setGun, fireGun, shootCustomer, shootEveryone, openAdmin, closeAdmin, adminAction, codeInput, codeHash, placePatty, pattyTap, pattyState, addTopping, serveTo, bellServe, trashPlate, beginNight, finishNight, newRun, showDraft, pickUpgrade, showTitle, judge, setActivePlate, cyclePlate, closeDown, buy, showSave, showPerks, togglePause };
+  window.__grill = { Game, Stations, Store, Tweens, grillHit, clickables, UPGRADES, rollOffers, Admin, Gun, GUNS, gunDef, setGun, setGunType, fireGun, shootCustomer, shootPed, shootEveryone, freezeCustomer, thawCustomer, delightCustomer, openAdmin, closeAdmin, adminAction, codeInput, codeHash, placePatty, pattyTap, pattyState, addTopping, serveTo, bellServe, trashPlate, beginNight, finishNight, newRun, showDraft, pickUpgrade, showTitle, judge, setActivePlate, cyclePlate, closeDown, buy, showSave, showPerks, togglePause };
 }
 boot().catch((e) => fatal('Something went wrong while starting the game: ' + (e && e.message ? e.message : e)));
 })();
